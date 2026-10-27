@@ -14,4 +14,4 @@ The user wants the solutions produced in this project saved to GitHub so they ca
 Repository: https://github.com/charlven/cloud-native-batch
 SSH URL: git@github.com:charlven/cloud-native-batch.git
 Default branch: main
-Use the connected GitHub tools to synchronize files. Local SSH is not required. Check remote files before creating or updating them, and preserve concurrent edits. This repository is public.
+The local checkout uses the SSH URL above as origin. Synchronize using Git over SSH; the connected GitHub integration rejected content writes with HTTP 403 during setup. Fetch and inspect remote changes before pushing, preserve concurrent edits, and never force-push. This repository is public.
