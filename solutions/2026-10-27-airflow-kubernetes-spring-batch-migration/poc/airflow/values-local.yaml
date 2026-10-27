@@ -1,0 +1,87 @@
+# Official apache-airflow/airflow Chart 1.22.0; local POC only.
+airflowVersion: "3.2.2"
+defaultAirflowTag: "3.2.2"
+executor: LocalExecutor
+allowPodLaunching: false
+postgresql:
+  enabled: false
+redis:
+  enabled: false
+statsd:
+  enabled: false
+data:
+  metadataSecretName: eod-airflow-metadata
+fernetKeySecretName: eod-fernet
+apiSecretKeySecretName: eod-api
+jwtSecretName: eod-jwt
+createUserJob:
+  useHelmHooks: false
+  defaultUser:
+    enabled: false
+migrateDatabaseJob:
+  useHelmHooks: false
+config:
+  core:
+    auth_manager: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+    simple_auth_manager_all_admins: "True"
+    parallelism: "4"
+    max_active_tasks_per_dag: "2"
+    load_examples: "False"
+  api:
+    workers: "1"
+  dag_processor:
+    parsing_processes: "1"
+  triggerer:
+    default_capacity: "100"
+extraEnvFrom: |
+  - secretRef:
+      name: eod-airflow-connections
+env:
+  - {name: EOD_NAMESPACE, value: batch-poc}
+  - {name: EOD_WORKER_IMAGE, value: "apache/airflow:3.2.2"}
+scheduler:
+  replicas: 1
+  serviceAccount:
+    name: airflow-poc-runner
+  resources:
+    requests: {cpu: 200m, memory: 512Mi}
+    limits: {cpu: "1", memory: 1536Mi}
+  extraVolumes: &dagVolumes
+    - name: eod-dags
+      configMap: {name: eod-dags}
+  extraVolumeMounts: &dagMounts
+    - {name: eod-dags, mountPath: /opt/airflow/dags, readOnly: true}
+  logGroomerSidecar:
+    enabled: false
+dagProcessor:
+  enabled: true
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 768Mi}
+  extraVolumes: *dagVolumes
+  extraVolumeMounts: *dagMounts
+  logGroomerSidecar:
+    enabled: false
+triggerer:
+  enabled: true
+  serviceAccount:
+    name: airflow-poc-triggerer
+  persistence:
+    enabled: false
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 768Mi}
+  extraVolumes: *dagVolumes
+  extraVolumeMounts: *dagMounts
+  logGroomerSidecar:
+    enabled: false
+apiServer:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 768Mi}
+  extraVolumes: *dagVolumes
+  extraVolumeMounts: *dagMounts
+logs:
+  persistence:
+    enabled: false

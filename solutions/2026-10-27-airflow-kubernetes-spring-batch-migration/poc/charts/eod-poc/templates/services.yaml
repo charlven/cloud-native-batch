@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: eod-postgres
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.storage.postgres }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: eod-minio
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.storage.minio }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eod-postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: eod-postgres}
+  template:
+    metadata:
+      labels: {app: eod-postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.images.postgres | quote }}
+          env:
+            - {name: POSTGRES_DB, value: airflow}
+            - {name: POSTGRES_USER, value: airflow}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: eod-credentials, key: postgres-password}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports: [{containerPort: 5432}]
+          readinessProbe:
+            exec: {command: [pg_isready, -U, airflow, -d, airflow]}
+            initialDelaySeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: eod-postgres}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eod-postgres
+spec:
+  selector: {app: eod-postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eod-minio
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: eod-minio}
+  template:
+    metadata:
+      labels: {app: eod-minio}
+    spec:
+      containers:
+        - name: minio
+          image: {{ .Values.images.minio | quote }}
+          args: [server, /data, --console-address, ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: {name: eod-credentials, key: s3-access-key}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: eod-credentials, key: s3-secret-key}
+          ports: [{containerPort: 9000}, {containerPort: 9001}]
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: 9000}
+            initialDelaySeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: eod-minio}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eod-minio
+spec:
+  selector: {app: eod-minio}
+  ports:
+    - {name: s3, port: 9000, targetPort: 9000}
+    - {name: console, port: 9001, targetPort: 9001}

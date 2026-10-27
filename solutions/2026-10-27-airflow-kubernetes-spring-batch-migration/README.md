@@ -248,6 +248,7 @@ DAG 固定不可变 image digest，避免可覆盖 tag 引起版本漂移。IfNo
 
 - 本文件：方案、设计决策、POC 验收清单及官方参考链接。
 - [仓库首页](../../README.md)：方案索引与获取方式。
-- 本次未提供可运行 DAG、Java 项目、Helm Chart 或数据库迁移脚本；后续实现可放入本目录并更新说明。
+- [本地 POC 部署文件与进度](poc/README.md)：2026-10-28 已加入 DAG、自定义 Helm Chart、Airflow values 和 PowerShell 安装脚本初稿。已完成静态检查，集群恢复、Airflow 安装与端到端运行仍待完成；详见进度记录。
+- 当前尚未实现真实 Spring Batch Java 项目或生产数据库迁移脚本。
 
 本方案基于讨论场景和官方机制文档整理，未访问真实 Control-M 配置、Kubernetes 集群、Nexus、业务数据库或生产文件，也未执行性能与故障测试。官方 stable 文档会更新，实施时应锁定软件版本并复核具体参数。容量、支持合同、镜像保留、网络访问和数据治理策略均待环境验证。

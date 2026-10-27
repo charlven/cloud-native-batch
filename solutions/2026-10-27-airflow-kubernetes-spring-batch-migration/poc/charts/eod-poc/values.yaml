@@ -1,0 +1,15 @@
+airflowNamespace: airflow-poc
+airflowServiceAccount: airflow-poc-runner
+images:
+  postgres: postgres:16.6-alpine
+  minio: minio/minio:RELEASE.2025-04-22T22-12-26Z
+  worker: apache/airflow:3.2.2
+storage:
+  postgres: 2Gi
+  minio: 2Gi
+quota:
+  pods: "8"
+  requestsCpu: "2"
+  requestsMemory: 3Gi
+  limitsCpu: "4"
+  limitsMemory: 5Gi

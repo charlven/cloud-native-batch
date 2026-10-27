@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eod-dags
+  namespace: {{ .Values.airflowNamespace }}
+data:
+  eod_pipeline.py: |
+{{ .Files.Get "files/eod_pipeline.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eod-worker
+data:
+  worker.py: |
+{{ .Files.Get "files/worker.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eod-domain-config
+data:
+  config.json: |
+    {"version":"demo-config-1","exposure_multiplier":"1.10"}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eod-batch
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eod-pod-runner
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete, patch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eod-pod-runner
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.airflowServiceAccount }}
+    namespace: {{ .Values.airflowNamespace }}
+  - kind: ServiceAccount
+    name: airflow-poc-triggerer
+    namespace: {{ .Values.airflowNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eod-pod-runner
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: eod-budget
+spec:
+  hard:
+    pods: {{ .Values.quota.pods | quote }}
+    requests.cpu: {{ .Values.quota.requestsCpu | quote }}
+    requests.memory: {{ .Values.quota.requestsMemory | quote }}
+    limits.cpu: {{ .Values.quota.limitsCpu | quote }}
+    limits.memory: {{ .Values.quota.limitsMemory | quote }}
