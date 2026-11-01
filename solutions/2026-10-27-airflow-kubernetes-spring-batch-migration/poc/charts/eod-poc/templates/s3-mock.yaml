@@ -1,0 +1,33 @@
+{{- if .Values.s3Mock.enabled }}
+{{- if .Values.minio.enabled }}
+{{- fail "Enable either s3Mock or minio, not both" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eod-s3mock
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: eod-s3mock}
+  template:
+    metadata:
+      labels: {app: eod-s3mock}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: moto
+          image: {{ .Values.s3Mock.image | quote }}
+          env:
+            - {name: MOTO_PORT, value: "9000"}
+            - {name: MOTO_HOST, value: "0.0.0.0"}
+          ports: [{containerPort: 9000}]
+          readinessProbe:
+            httpGet: {path: /moto-api/, port: 9000}
+            initialDelaySeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+{{- end }}

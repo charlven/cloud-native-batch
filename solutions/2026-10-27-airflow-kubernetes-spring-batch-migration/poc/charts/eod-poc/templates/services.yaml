@@ -106,7 +106,9 @@ kind: Service
 metadata:
   name: eod-minio
 spec:
-  selector: {app: eod-minio}
+  selector: {app: {{ ternary "eod-s3mock" "eod-minio" .Values.s3Mock.enabled }}}
   ports:
     - {name: s3, port: 9000, targetPort: 9000}
+    {{- if not .Values.s3Mock.enabled }}
     - {name: console, port: 9001, targetPort: 9001}
+    {{- end }}

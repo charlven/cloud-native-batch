@@ -37,7 +37,7 @@ git pull --ff-only
 ## 方案索引
 
 - [2026-10-27：Spring Batch / Control-M 向 Airflow / Kubernetes 迁移方案](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/README.md)：目标架构、运维支持、并发与容量、配置与状态、跨 domain 编排、镜像保障及 POC 验收计划。原文为架构设计评估；后续本地执行结果见下方 POC。
-- [本地 Kubernetes / Airflow / Spring Batch POC](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc/README.md)：2026-11-01 已跑通真实 Java Batch，Airflow 正常执行与主动失败传播均验证通过；包含源码、DAG、Helm Chart、安装和验收脚本。S3 接入与生产容量验证待后续完成。
+- [本地 Kubernetes / Airflow / Spring Batch POC](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc/README.md)：2026-11-01 已跑通真实 Java Batch，Airflow 正常执行与主动失败传播均验证通过；包含源码、DAG、Helm Chart、安装和验收脚本。S3/Python 模拟链路也已验证；Java 接入 S3 与生产容量验证待后续完成。
 
 ---
 
@@ -76,4 +76,4 @@ Alternatively, use **Code → Download ZIP** on GitHub.
 ## Solution index
 
 - [2026-10-27: Spring Batch / Control-M migration to Airflow / Kubernetes](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/README.md#en): architecture, operational support, concurrency and capacity, configuration and state, domain orchestration, image availability, and POC acceptance criteria. The original document is a design assessment; subsequent local execution results are linked below.
-- [Local Kubernetes / Airflow / Spring Batch POC](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc/README.md#en): the real Java Batch pipeline and intentional failure propagation were verified on 2026-11-01. Includes source, DAGs, Helm charts, setup and verification scripts. S3 integration and production capacity validation remain outstanding.
+- [Local Kubernetes / Airflow / Spring Batch POC](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc/README.md#en): the real Java Batch pipeline and intentional failure propagation were verified on 2026-11-01. Includes source, DAGs, Helm charts, setup and verification scripts. The S3/Python simulation has also passed; Java-to-S3 integration and production capacity validation remain outstanding.

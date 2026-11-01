@@ -2,6 +2,9 @@ airflowNamespace: airflow-poc
 airflowServiceAccount: airflow-poc-runner
 minio:
   enabled: false
+s3Mock:
+  enabled: true
+  image: motoserver/moto:5.1.16@sha256:f78c8e0370cabe2516395f351fb27e1df1aa6dc2d728d6de16d5dfbc9ccf595d
 images:
   postgres: postgres:16.6-alpine
   minio: minio/minio:RELEASE.2025-04-22T22-12-26Z

@@ -88,15 +88,44 @@ kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- ps
 kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- psql -U airflow -d airflow -c 'SELECT job_execution_id,status,exit_code FROM batch_job_execution ORDER BY job_execution_id'
 ```
 
-## wait_manifest 连接失败排查（2026-11-01）
+## S3 wait 修复与使用（2026-11-01）
 
-实际日志为 `EndpointConnectionError`，底层错误是 `Connection refused`。检查确认 `eod-minio` Service 存在，但 Endpoints 为空，MinIO 没有运行中的 Pod，配置为 `minio.enabled: false`。这不是文件不存在或路径拼写错误；服务未运行时，修改 bucket/key 或单纯重试不能解决。
+原始异常是 `EndpointConnectionError / Connection refused`：eod-minio Service 没有后端 Pod。原 MinIO 镜像仍无法拉取，因此本地 POC 现在使用 Moto 5.1.16 官方 S3 模拟服务，镜像已固定 digest；`eod-minio` Service 名称保留以兼容现有 endpoint，实际后端为 `eod-s3mock`，并不是真正的 MinIO。
 
-当前运行真实 Java Batch 请在 Airflow 选择 `spring_batch_poc`，使用默认参数触发。`eod_exposure_poc` 是保留的 S3/Python 模拟流程，其中 wait_manifest 尚无可用的对象存储，后续步骤会因上游失败显示 upstream_failed。
+已经验证：
 
-要启用该 S3 流程，必须先提供可访问的 S3 兼容服务及正确凭据，更新 Airflow 和 worker 的 endpoint，上传演示文件并最后发布 manifest，再重新触发。仅设置 minio.enabled=true 不足以解决已知镜像访问拒绝问题。
+- 默认对象 `s3://eod-input/2026-10-26/demo-v1/manifest.json` 可从 Airflow 内部读取。
+- 测试运行 `s3-wait-proof-1793531032` 先等待一个不存在的 manifest，wait_manifest 进入 deferred。
+- 上传交易文件并最后发布 manifest 后，wait 恢复；wait_manifest、ingest、tree、exposure、reconcile 全部成功，DAG 为 success，四条业务阶段记录已保存。
 
-`*.svc.cluster.local` 是集群内部地址，不能作为普通电脑浏览器链接直接使用。外部访问需要端口转发，私有对象还可能要求认证或预签名 URL；复制路径时也应去掉尾部的双引号。
+现在在 Airflow 选择 **eod_exposure_poc**，重新 Trigger 一个新运行，使用默认参数：
+
+```json
+{"business_date":"2026-10-26","input_version":"demo-v1","config_version":"demo-config-1"}
+```
+
+旧的失败运行是历史记录，不会自动变为成功；建议新建运行，避免只清除 wait 而留下下游 upstream_failed 状态。这个 DAG 使用 Python 模拟 domain；真实 Java Batch 仍运行 spring_batch_poc，两条验证链路尚未合并。
+
+重建服务、准备默认数据及验证真正的异步等待：
+
+```powershell
+$poc = './solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc'
+& "$poc/scripts/Deploy-Dag.ps1"
+& "$poc/scripts/Seed-Demo.ps1"
+& "$poc/scripts/Verify-S3.ps1"
+```
+
+Verify-S3 每次生成唯一 input_version，先确认 deferred，再上传文件并等待整条流程成功。首次安装 Setup-Local 已自动准备默认数据。
+
+Moto 是内存中的测试模拟服务，不提供生产级持久化、权限或故障保障。Pod 重启后对象会丢失，应重新执行 Seed-Demo；PostgreSQL 中的历史记录不会因此丢失。不要把它当作生产 S3 或 MinIO 的安全和可靠性验证。如需真正 MinIO，将 s3Mock.enabled 设为 false、minio.enabled 设为 true，并提供可获取的自有镜像；Chart 禁止同时启用两种后端。
+
+`*.svc.cluster.local` 是集群内部地址，不能在电脑浏览器直接打开；复制路径时去掉尾部双引号。若只想在电脑上查看本地模拟服务，可另开窗口运行下列转发，再访问 http://localhost:9000/eod-input/2026-10-26/demo-v1/manifest.json 。该访问不代表生产认证行为。
+
+```powershell
+kubectl --context docker-desktop -n batch-poc port-forward --address 127.0.0.1 service/eod-minio 9000:9000
+```
+
+Moto 部署方式参考[官方 Server Mode 文档](https://docs.getmoto.org/en/5.1.3/docs/server_mode.html)。
 
 ## 文件说明
 
@@ -104,15 +133,16 @@ kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- ps
 |---|---|
 | `spring-batch/` | 完整 Java 源码、pom、固定 CSV、Dockerfile |
 | `charts/eod-poc/files/spring_batch_poc.py` | 真实 Java Batch DAG |
-| `charts/eod-poc/files/eod_pipeline.py` | 早期可选 S3 + Python 模拟 domain DAG，默认保持暂停 |
+| `charts/eod-poc/files/eod_pipeline.py` | 已验证的 S3 + Python 模拟 domain DAG |
 | `charts/eod-poc/files/worker.py` | 早期 S3 模拟程序，不是 Spring Batch |
-| `charts/eod-poc/` | ConfigMap DAG 发布、业务配置、RBAC、配额、PostgreSQL、可选 MinIO |
+| `charts/eod-poc/` | ConfigMap DAG 发布、业务配置、RBAC、配额、PostgreSQL、Moto S3、可选 MinIO |
 | `airflow/values-local.yaml` | Airflow 官方 Chart 本地配置 |
 | `scripts/Build-Batch.ps1` | 用 Docker 构建 Java 镜像，无需本机 Maven |
 | `scripts/Setup-Local.ps1` | 部署依赖、Airflow 和包含 deferred task 的 compute Pool |
 | `scripts/Deploy-Dag.ps1` | Helm 更新 DAG |
 | `scripts/Open-Airflow.ps1` | 本地 UI 端口转发 |
 | `scripts/Verify-Batch.ps1` | 运行真实 DAG 并检查数据库 |
+| `scripts/Verify-S3.ps1` | 验证缺文件等待、上传后恢复及 S3/Python 完整链路 |
 | `HISTORY-2026-10-28.md` | 上一次未完成时的历史快照，不代表当前状态 |
 
 ## 已解决的问题
@@ -126,7 +156,7 @@ kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- ps
 
 ## 边界与下一步
 
-- MinIO 原选镜像目前返回访问拒绝，因此默认副本数为 0，Setup 不再 seed S3。S3 模拟 DAG 保留但没有端到端验证；接通可用对象存储后才能运行。
+- 原 MinIO 镜像仍不可获取，默认使用内存型 Moto S3 模拟服务，已验证 S3/Python 链路；它不能代替生产对象存储。
 - Java POC 读取内置 CSV；接入 S3、文件 manifest 和跨 domain 多镜像编排为下一阶段。
 - 尚未部署 Loki、Grafana、Prometheus；当前使用 Airflow task 日志和数据库执行记录。日志未配置长期远端存储。
 - 当前 PostgreSQL 为方便本机演示共用实例和用户，业务数据使用 spring_poc schema。生产应分离用户、权限、可用性与恢复策略。
@@ -226,15 +256,44 @@ kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- ps
 kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- psql -U airflow -d airflow -c 'SELECT job_execution_id,status,exit_code FROM batch_job_execution ORDER BY job_execution_id'
 ```
 
-## Troubleshooting wait_manifest connection failures (2026-11-01)
+## S3 wait repair and usage (2026-11-01)
 
-The observed exception is `EndpointConnectionError`, caused by `Connection refused`. The eod-minio Service exists, but its Endpoints are empty, no MinIO Pod is running, and minio.enabled is false. This is not a missing object or misspelled key: changing the bucket/key or retrying alone cannot restore an unavailable service.
+The original exception was `EndpointConnectionError / Connection refused`: eod-minio had no backend Pod. The original MinIO image remains unavailable, so this local POC now uses the official Moto 5.1.16 S3 simulator, pinned by image digest. The eod-minio Service name is retained for endpoint compatibility, but its backend is eod-s3mock, not an actual MinIO server.
 
-To run the working real Java Batch application, select spring_batch_poc in Airflow and trigger it with the defaults. eod_exposure_poc is the retained S3/Python simulation. Its wait_manifest currently has no available object store, so downstream tasks become upstream_failed.
+Verified:
 
-Enabling the S3 flow requires an accessible S3-compatible service and valid credentials, updating both Airflow and worker endpoints, uploading demo files, publishing the manifest last, and triggering a new run. Setting minio.enabled=true alone does not resolve the known image access denial.
+- Airflow can read the default object s3://eod-input/2026-10-26/demo-v1/manifest.json.
+- Run s3-wait-proof-1793531032 initially waited for a missing manifest; wait_manifest entered deferred.
+- After uploading trades and publishing the manifest last, the Sensor resumed. wait_manifest, ingest, tree, exposure, and reconcile all succeeded; the DAG reached success and all four business-stage records were persisted.
 
-The *.svc.cluster.local address is internal to Kubernetes and is not a workstation browser URL. External access requires port forwarding, and private objects may require authentication or a presigned URL. Remove the trailing double quote when copying the path.
+In Airflow, select **eod_exposure_poc**, create a new triggered run, and use the defaults:
+
+```json
+{"business_date":"2026-10-26","input_version":"demo-v1","config_version":"demo-config-1"}
+```
+
+Historical failed runs do not automatically become successful. Prefer a new run rather than clearing only wait while leaving downstream upstream_failed tasks. This DAG simulates domains in Python; spring_batch_poc remains the real Java application. The two verified pipelines are not yet integrated.
+
+Recreate the service, prepare default data, and verify genuine asynchronous waiting:
+
+```powershell
+$poc = './solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc'
+& "$poc/scripts/Deploy-Dag.ps1"
+& "$poc/scripts/Seed-Demo.ps1"
+& "$poc/scripts/Verify-S3.ps1"
+```
+
+Verify-S3 generates a unique input_version, checks deferred status before uploading, and waits for the whole pipeline to succeed. Setup-Local now seeds the default data automatically on initial installation.
+
+Moto is an in-memory test simulator, without production durability, permissions, or availability guarantees. Objects disappear after its Pod restarts; rerun Seed-Demo. PostgreSQL history survives that restart. This does not validate production S3/MinIO security or reliability. To use actual MinIO, disable s3Mock.enabled, enable minio.enabled, and supply an accessible image. The chart rejects enabling both backends.
+
+The *.svc.cluster.local address is internal to Kubernetes and cannot be opened directly from a workstation browser. Remove trailing quotes from copied paths. To inspect the local mock from the workstation, run the following in another window, then open http://localhost:9000/eod-input/2026-10-26/demo-v1/manifest.json . This access does not represent production authentication behavior.
+
+```powershell
+kubectl --context docker-desktop -n batch-poc port-forward --address 127.0.0.1 service/eod-minio 9000:9000
+```
+
+See the [official Moto Server Mode documentation](https://docs.getmoto.org/en/5.1.3/docs/server_mode.html) for the deployment mechanism.
 
 ## Files
 
@@ -242,15 +301,16 @@ The *.svc.cluster.local address is internal to Kubernetes and is not a workstati
 |---|---|
 | `spring-batch/` | Complete Java source, pom, CSV fixture, and Dockerfile |
 | `charts/eod-poc/files/spring_batch_poc.py` | Real Java Batch DAG |
-| `charts/eod-poc/files/eod_pipeline.py` | Earlier optional S3/Python domain simulation, left paused by default |
+| `charts/eod-poc/files/eod_pipeline.py` | Verified S3/Python domain simulation |
 | `charts/eod-poc/files/worker.py` | Earlier S3 simulation, not Spring Batch |
-| `charts/eod-poc/` | ConfigMap DAG publication, business configuration, RBAC, quotas, PostgreSQL, optional MinIO |
+| `charts/eod-poc/` | ConfigMap DAG publication, business configuration, RBAC, quotas, PostgreSQL, Moto S3, optional MinIO |
 | `airflow/values-local.yaml` | Local settings for the official Airflow chart |
 | `scripts/Build-Batch.ps1` | Builds the Java image with Docker; local Maven is unnecessary |
 | `scripts/Setup-Local.ps1` | Deploys dependencies, Airflow, and a compute Pool that counts deferred tasks |
 | `scripts/Deploy-Dag.ps1` | Updates DAGs through Helm |
 | `scripts/Open-Airflow.ps1` | Local UI port forwarding |
 | `scripts/Verify-Batch.ps1` | Executes the real DAG and checks PostgreSQL |
+| `scripts/Verify-S3.ps1` | Verifies missing-file deferral, resume after upload, and the full S3/Python pipeline |
 | `HISTORY-2026-10-28.md` | Historical incomplete checkpoint, not the current state |
 
 ## Resolved issues
@@ -264,7 +324,7 @@ The *.svc.cluster.local address is internal to Kubernetes and is not a workstati
 
 ## Limits and next steps
 
-- The selected MinIO image currently returns access denied. Its default replica count is zero and Setup no longer seeds S3. The S3 simulation DAG remains available but has not been validated end to end; connect an accessible object store before running it.
+- The original MinIO image remains unavailable. The default in-memory Moto S3 simulator now supports the verified S3/Python pipeline; it is not a production object store.
 - The Java POC reads bundled CSV. S3 integration, file manifests, and multiple domain images are future work.
 - Loki, Grafana, and Prometheus are not deployed. Current evidence uses Airflow task logs and database records; durable remote log storage is not configured.
 - For local convenience, PostgreSQL shares an instance and user; business data uses schema spring_poc. Production needs separated permissions, availability, and recovery policies.

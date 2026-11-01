@@ -46,4 +46,5 @@ Invoke-Helm upgrade --install airflow-poc apache-airflow/airflow --version 1.22.
 # Deferred KPO tasks MUST continue occupying compute slots while pods run.
 Invoke-Kube -n $script:AirflowNamespace exec statefulset/airflow-poc-scheduler -- airflow pools set eod_compute 2 'Local EOD compute capacity' --include-deferred
 Write-Host 'Installed. Build-Batch.ps1 builds the Java image; Deploy-Dag.ps1 publishes the DAG; Open-Airflow.ps1 opens access.'
-Write-Host 'Trigger spring_batch_poc. The optional S3 simulation needs a separately enabled, accessible object store.'
+& (Join-Path $PSScriptRoot 'Seed-Demo.ps1')
+Write-Host 'Trigger spring_batch_poc for Java, or eod_exposure_poc for the S3/Python simulation. Moto S3 data is ephemeral; rerun Seed-Demo.ps1 after it restarts.'
