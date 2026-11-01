@@ -88,6 +88,16 @@ kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- ps
 kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- psql -U airflow -d airflow -c 'SELECT job_execution_id,status,exit_code FROM batch_job_execution ORDER BY job_execution_id'
 ```
 
+## wait_manifest 连接失败排查（2026-11-01）
+
+实际日志为 `EndpointConnectionError`，底层错误是 `Connection refused`。检查确认 `eod-minio` Service 存在，但 Endpoints 为空，MinIO 没有运行中的 Pod，配置为 `minio.enabled: false`。这不是文件不存在或路径拼写错误；服务未运行时，修改 bucket/key 或单纯重试不能解决。
+
+当前运行真实 Java Batch 请在 Airflow 选择 `spring_batch_poc`，使用默认参数触发。`eod_exposure_poc` 是保留的 S3/Python 模拟流程，其中 wait_manifest 尚无可用的对象存储，后续步骤会因上游失败显示 upstream_failed。
+
+要启用该 S3 流程，必须先提供可访问的 S3 兼容服务及正确凭据，更新 Airflow 和 worker 的 endpoint，上传演示文件并最后发布 manifest，再重新触发。仅设置 minio.enabled=true 不足以解决已知镜像访问拒绝问题。
+
+`*.svc.cluster.local` 是集群内部地址，不能作为普通电脑浏览器链接直接使用。外部访问需要端口转发，私有对象还可能要求认证或预签名 URL；复制路径时也应去掉尾部的双引号。
+
 ## 文件说明
 
 | 文件/目录 | 用途 |
@@ -215,6 +225,16 @@ Query the results:
 kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- psql -U airflow -d airflow -c 'SELECT * FROM spring_poc.exposures ORDER BY business_date,tree_id'
 kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- psql -U airflow -d airflow -c 'SELECT job_execution_id,status,exit_code FROM batch_job_execution ORDER BY job_execution_id'
 ```
+
+## Troubleshooting wait_manifest connection failures (2026-11-01)
+
+The observed exception is `EndpointConnectionError`, caused by `Connection refused`. The eod-minio Service exists, but its Endpoints are empty, no MinIO Pod is running, and minio.enabled is false. This is not a missing object or misspelled key: changing the bucket/key or retrying alone cannot restore an unavailable service.
+
+To run the working real Java Batch application, select spring_batch_poc in Airflow and trigger it with the defaults. eod_exposure_poc is the retained S3/Python simulation. Its wait_manifest currently has no available object store, so downstream tasks become upstream_failed.
+
+Enabling the S3 flow requires an accessible S3-compatible service and valid credentials, updating both Airflow and worker endpoints, uploading demo files, publishing the manifest last, and triggering a new run. Setting minio.enabled=true alone does not resolve the known image access denial.
+
+The *.svc.cluster.local address is internal to Kubernetes and is not a workstation browser URL. External access requires port forwarding, and private objects may require authentication or a presigned URL. Remove the trailing double quote when copying the path.
 
 ## Files
 
