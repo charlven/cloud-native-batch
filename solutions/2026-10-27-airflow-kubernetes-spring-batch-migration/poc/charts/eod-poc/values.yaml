@@ -1,5 +1,7 @@
 airflowNamespace: airflow-poc
 airflowServiceAccount: airflow-poc-runner
+minio:
+  enabled: false
 images:
   postgres: postgres:16.6-alpine
   minio: minio/minio:RELEASE.2025-04-22T22-12-26Z

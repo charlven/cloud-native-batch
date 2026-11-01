@@ -31,4 +31,4 @@ git pull --ff-only
 ## 方案索引
 
 - [2026-10-27：Spring Batch / Control-M 向 Airflow / Kubernetes 迁移方案](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/README.md)：目标架构、运维支持、并发与容量、配置与状态、跨 domain 编排、镜像保障及 POC 验收计划。当前为设计评估，尚未执行 POC。
-- [本地 Kubernetes / Airflow POC：部署文件与当前进度](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc/README.md)：DAG、Helm Chart 和安装脚本初稿已归档；本机节点恢复、Airflow 安装及运行验证待继续。
+- [本地 Kubernetes / Airflow / Spring Batch POC](solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc/README.md)：2026-11-01 已跑通真实 Java Batch，Airflow 正常执行与主动失败传播均验证通过；包含源码、DAG、Helm Chart、安装和验收脚本。S3 接入与生产容量验证待后续完成。

@@ -68,7 +68,7 @@ kind: Deployment
 metadata:
   name: eod-minio
 spec:
-  replicas: 1
+  replicas: {{ ternary 1 0 .Values.minio.enabled }}
   strategy:
     type: Recreate
   selector:

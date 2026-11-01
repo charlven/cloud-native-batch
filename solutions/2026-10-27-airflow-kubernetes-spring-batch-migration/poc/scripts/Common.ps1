@@ -12,7 +12,14 @@ $env:no_proxy = $env:NO_PROXY
 $script:HelmOptions = @('--repository-config', (Join-Path $script:LocalRoot 'helm/repositories.yaml'), '--repository-cache', (Join-Path $script:LocalRoot 'helm/cache'))
 
 function Invoke-Kube {
-    & kubectl --context $script:KubeContext @args
+    $commandArgs = @($args)
+    # PowerShell consumes a bare -- passed through a function. Restore kubectl's exec boundary.
+    $execIndex = [Array]::IndexOf($commandArgs, 'exec')
+    if ($execIndex -ge 0 -and $commandArgs -notcontains '--') {
+        $boundary = $execIndex + 2
+        $commandArgs = @($commandArgs[0..($boundary-1)]) + @('--') + @($commandArgs[$boundary..($commandArgs.Count-1)])
+    }
+    & kubectl --context $script:KubeContext @commandArgs
     if ($LASTEXITCODE -ne 0) { throw "kubectl failed (exit $LASTEXITCODE)" }
 }
 

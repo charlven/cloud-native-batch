@@ -1,5 +1,6 @@
 .local/
 **/__pycache__/
 *.pyc
+**/target/
 **/charts/*.tgz
 **/.helmignore.local

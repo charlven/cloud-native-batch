@@ -44,6 +44,6 @@ Invoke-Helm upgrade --install eod-poc (Join-Path $script:PocRoot 'charts/eod-poc
 Invoke-Helm upgrade --install airflow-poc apache-airflow/airflow --version 1.22.0 --kube-context $script:KubeContext --namespace $script:AirflowNamespace -f (Join-Path $script:PocRoot 'airflow/values-local.yaml') --wait --timeout 20m
 
 # Deferred KPO tasks MUST continue occupying compute slots while pods run.
-Invoke-Kube -n $script:AirflowNamespace exec deployment/airflow-poc-scheduler -- airflow pools set eod_compute 2 'Local EOD compute capacity' --include-deferred
-& (Join-Path $PSScriptRoot 'Seed-Demo.ps1')
-Write-Host 'Installed. Run Open-Airflow.ps1, then trigger eod_exposure_poc using the demo defaults.'
+Invoke-Kube -n $script:AirflowNamespace exec statefulset/airflow-poc-scheduler -- airflow pools set eod_compute 2 'Local EOD compute capacity' --include-deferred
+Write-Host 'Installed. Build-Batch.ps1 builds the Java image; Deploy-Dag.ps1 publishes the DAG; Open-Airflow.ps1 opens access.'
+Write-Host 'Trigger spring_batch_poc. The optional S3 simulation needs a separately enabled, accessible object store.'

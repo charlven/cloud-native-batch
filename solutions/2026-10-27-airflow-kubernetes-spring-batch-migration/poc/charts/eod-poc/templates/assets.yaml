@@ -4,6 +4,10 @@ metadata:
   name: eod-dags
   namespace: {{ .Values.airflowNamespace }}
 data:
+  .airflowignore: |
+    ..*
+  spring_batch_poc.py: |
+{{ .Files.Get "files/spring_batch_poc.py" | indent 4 }}
   eod_pipeline.py: |
 {{ .Files.Get "files/eod_pipeline.py" | indent 4 }}
 ---

@@ -15,6 +15,7 @@ fernetKeySecretName: eod-fernet
 apiSecretKeySecretName: eod-api
 jwtSecretName: eod-jwt
 createUserJob:
+  enabled: false
   useHelmHooks: false
   defaultUser:
     enabled: false
@@ -27,6 +28,7 @@ config:
     parallelism: "4"
     max_active_tasks_per_dag: "2"
     load_examples: "False"
+    dag_ignore_file_syntax: glob
   api:
     workers: "1"
   dag_processor:
