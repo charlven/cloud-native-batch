@@ -40,6 +40,7 @@ Set-PocSecret $script:AirflowNamespace 'eod-api' @{'api-secret-key'=$state.api}
 Set-PocSecret $script:AirflowNamespace 'eod-jwt' @{'jwt-secret'=$state.jwt}
 
 Invoke-Helm repo add apache-airflow https://airflow.apache.org
+& (Join-Path $PSScriptRoot 'Initialize-AirflowAccess.ps1')
 Invoke-Helm upgrade --install eod-poc (Join-Path $script:PocRoot 'charts/eod-poc') --kube-context $script:KubeContext --namespace $script:BatchNamespace --wait --timeout 15m
 Invoke-Helm upgrade --install airflow-poc apache-airflow/airflow --version 1.22.0 --kube-context $script:KubeContext --namespace $script:AirflowNamespace -f (Join-Path $script:PocRoot 'airflow/values-local.yaml') --wait --timeout 20m
 
@@ -47,4 +48,5 @@ Invoke-Helm upgrade --install airflow-poc apache-airflow/airflow --version 1.22.
 Invoke-Kube -n $script:AirflowNamespace exec statefulset/airflow-poc-scheduler -- airflow pools set eod_compute 2 'Local EOD compute capacity' --include-deferred
 Write-Host 'Installed. Build-Batch.ps1 builds the Java image; Deploy-Dag.ps1 publishes the DAG; Open-Airflow.ps1 opens access.'
 & (Join-Path $PSScriptRoot 'Seed-Demo.ps1')
+& (Join-Path $PSScriptRoot 'Setup-Ingress.ps1')
 Write-Host 'Trigger spring_batch_poc for Java, or eod_exposure_poc for the S3/Python simulation. Moto S3 data is ephemeral; rerun Seed-Demo.ps1 after it restarts.'

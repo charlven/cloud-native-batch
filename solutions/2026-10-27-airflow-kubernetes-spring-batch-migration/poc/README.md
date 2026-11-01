@@ -24,13 +24,13 @@ flowchart LR
 - Docker Desktop Kubernetes v1.34.1，context 固定为 `docker-desktop`。
 - Spring Boot 3.5.7 / Spring Batch 5.2.4，Java 21 容器；本地镜像 `eod-spring-batch:0.1.0`。
 - PostgreSQL 16.6，持久化 Airflow metadata、Spring Batch JobRepository 和演示业务表。
-- namespaces：`airflow-poc` 与 `batch-poc`。
+- namespaces：`airflow-poc`、`batch-poc` 与入口控制器使用的 `ingress-poc`。
 
 当前 Java 项目使用镜像内的固定 CSV 样例，演示三个真实 Spring Batch Step；Exposure 使用样例公式 amount × 1.10。它还不是实际生产计算规则，也尚未接入 VM 文件或 S3。
 
 ## 打开与运行
 
-当前访问地址：[Airflow UI](http://localhost:8080)。本地自动管理员模式，无需密码；只通过 127.0.0.1 端口转发开放，不适用于公开服务或生产环境。
+当前固定入口：[Airflow UI](http://localhost/)。使用 Traefik Ingress，不需要运行端口转发命令。已启用 Airflow 自带登录，账号为 `poc`；随机密码仅保存在仓库根目录 `.local/ingress-credentials.json` 和 Kubernetes Secret，不上传 GitHub。
 
 在页面中选择 **spring_batch_poc**，手工 Trigger，默认参数：
 
@@ -44,18 +44,25 @@ PowerShell 7，在仓库根目录：
 $poc = './solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc'
 & "$poc/scripts/Build-Batch.ps1"
 & "$poc/scripts/Setup-Local.ps1"
-& "$poc/scripts/Open-Airflow.ps1"
 ```
 
-如果本机服务仍在运行，无需再次安装；端口转发停止时，仅执行 Open-Airflow.ps1，并保持窗口运行。
-
-也可以使用后台方式恢复页面入口，启动命令结束后无需保持终端窗口：
+安装脚本已包含 Ingress 配置。服务运行时，直接打开 http://localhost/ 即可。仅为已有环境安装或更新 Ingress：
 
 ```powershell
-& "$poc/scripts/Start-AirflowUI.ps1"
+& "$poc/scripts/Setup-Ingress.ps1"
 ```
 
-本次页面无法访问的原因是本机 8080 端口转发已退出，集群和 Airflow 四个组件均正常。后台脚本仅绑定 127.0.0.1，并检查 HTTP 200；本次已验证恢复成功。转发不是永久入口：电脑重启、网络中断或 Pod 更换后仍可能需要重新执行脚本。日志和 PID 保存在被 Git 忽略的 `.local/airflow-ui.*`；若 8080 已被占用，脚本不会终止已有进程。
+查看本机登录凭据（不要将输出上传 GitHub）：
+
+```powershell
+Get-Content .local/ingress-credentials.json
+```
+
+访问链路是浏览器 → Docker Desktop LoadBalancer 的 80 端口 → Traefik → Ingress → Airflow Service → API Server Pod。相关 Deployment、Service、Ingress 和 Secret 保存在集群中；Pod 重建由 Kubernetes 恢复，不依赖 PowerShell 或 kubectl 会话。Docker Desktop 和 Kubernetes 必须处于运行状态，删除或重置集群后需要重新安装。这个本地 HTTP/SimpleAuthManager 配置不等同于生产 HTTPS/SSO。
+
+已验证：页面 HTTP 200、原生登录 HTTP 201、带令牌的 DAG API HTTP 200、匿名 DAG API HTTP 401。Traefik 滚动重建后仍可访问；旧 8080 转发不再作为访问依赖。Open-Airflow.ps1 和 Start-AirflowUI.ps1 保留作为应急转发工具，常规访问不需要执行它们。
+
+官方依据：[Docker Desktop 的本地 LoadBalancer](https://www.docker.com/blog/how-kubernetes-works-under-the-hood-with-docker-desktop/)、[Traefik Kubernetes 安装](https://doc.traefik.io/traefik/getting-started/quick-start-with-kubernetes/)、[Airflow SimpleAuthManager 配置](https://airflow.apache.org/docs/apache-airflow/3.2.0/configurations-ref.html)。
 
 重新部署 DAG：
 
@@ -148,7 +155,10 @@ Moto 部署方式参考[官方 Server Mode 文档](https://docs.getmoto.org/en/5
 | `scripts/Build-Batch.ps1` | 用 Docker 构建 Java 镜像，无需本机 Maven |
 | `scripts/Setup-Local.ps1` | 部署依赖、Airflow 和包含 deferred task 的 compute Pool |
 | `scripts/Deploy-Dag.ps1` | Helm 更新 DAG |
-| `scripts/Open-Airflow.ps1` | 本地 UI 端口转发 |
+| `scripts/Open-Airflow.ps1` | 应急 UI 端口转发 |
+| `scripts/Setup-Ingress.ps1` | 安装固定 Ingress 入口并启用原生登录 |
+| `scripts/Initialize-AirflowAccess.ps1` | 初始化或复用本地访问凭据并写入 Secret |
+| `ingress/values-traefik.yaml`、`charts/airflow-ingress/` | 入口控制器和 Ingress 路由配置 |
 | `scripts/Start-AirflowUI.ps1` | 后台启动 UI 转发并验证 HTTP 200 |
 | `scripts/Verify-Batch.ps1` | 运行真实 DAG 并检查数据库 |
 | `scripts/Verify-S3.ps1` | 验证缺文件等待、上传后恢复及 S3/Python 完整链路 |
@@ -201,13 +211,13 @@ flowchart LR
 - Docker Desktop Kubernetes v1.34.1; scripts explicitly target context `docker-desktop`.
 - Spring Boot 3.5.7 / Spring Batch 5.2.4, Java 21 container, local image `eod-spring-batch:0.1.0`.
 - PostgreSQL 16.6 persists Airflow metadata, the Spring Batch JobRepository, and demo business tables.
-- Namespaces: `airflow-poc` and `batch-poc`.
+- Namespaces: `airflow-poc`, `batch-poc`, and `ingress-poc` for the controller.
 
 The Java project reads a fixed CSV fixture bundled in its image and executes three real Spring Batch steps. The demo exposure formula is amount × 1.10. Production calculation rules, VM files, and S3 are not yet integrated.
 
 ## Open and run
 
-Access [Airflow UI](http://localhost:8080). Local automatic administrator access requires no password. Access is exposed through a loopback-only port forward on 127.0.0.1; this authentication setup is unsuitable for public or production services.
+Persistent entry: [Airflow UI](http://localhost/), served through Traefik Ingress without a port-forward process. Airflow native login is enabled with username `poc`; the random password is stored only in the repository-root `.local/ingress-credentials.json` and a Kubernetes Secret, not GitHub.
 
 Choose **spring_batch_poc** and trigger it manually with the defaults:
 
@@ -221,18 +231,25 @@ From the repository root in PowerShell 7:
 $poc = './solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc'
 & "$poc/scripts/Build-Batch.ps1"
 & "$poc/scripts/Setup-Local.ps1"
-& "$poc/scripts/Open-Airflow.ps1"
 ```
 
-No reinstallation is necessary while the local services remain running. If port forwarding stops, run only Open-Airflow.ps1 and keep that window running.
-
-Alternatively, restore the UI with a detached forward so the invoking terminal need not remain open:
+Setup now includes Ingress installation. While services are running, simply open http://localhost/. To install or update Ingress in an existing environment:
 
 ```powershell
-& "$poc/scripts/Start-AirflowUI.ps1"
+& "$poc/scripts/Setup-Ingress.ps1"
 ```
 
-The observed access failure was caused by the local port-8080 forward exiting; the cluster and all four Airflow components were healthy. The background helper binds only to 127.0.0.1 and checks for HTTP 200; restoration was verified. This is not a permanent ingress: restart the helper if the workstation reboots, networking disconnects, or Pod replacement breaks the forward. Logs and the PID are stored in ignored `.local/airflow-ui.*` files. If 8080 is already occupied, the helper does not terminate the existing process.
+Read the local login credentials (do not upload this output to GitHub):
+
+```powershell
+Get-Content .local/ingress-credentials.json
+```
+
+Traffic flows from the browser through Docker Desktop's LoadBalancer on port 80, Traefik, Ingress, the Airflow Service, and the API Server Pod. Deployments, Services, Ingress, and Secrets persist in the cluster; Kubernetes recreates Pods without a PowerShell or kubectl session. Docker Desktop and Kubernetes must be running. Deleting/resetting the cluster requires reinstallation. This local HTTP/SimpleAuthManager setup is not production HTTPS/SSO.
+
+Verified: homepage HTTP 200, native login HTTP 201, authenticated DAG API HTTP 200, and anonymous DAG API HTTP 401. Access survived a Traefik rolling rebuild and no longer depends on the old 8080 forward. Open-Airflow.ps1 and Start-AirflowUI.ps1 remain emergency forwarding tools; neither is needed for normal access.
+
+Official references: [Docker Desktop local LoadBalancer](https://www.docker.com/blog/how-kubernetes-works-under-the-hood-with-docker-desktop/), [Traefik Kubernetes setup](https://doc.traefik.io/traefik/getting-started/quick-start-with-kubernetes/), [Airflow SimpleAuthManager settings](https://airflow.apache.org/docs/apache-airflow/3.2.0/configurations-ref.html).
 
 Redeploy the DAG:
 
@@ -325,7 +342,10 @@ See the [official Moto Server Mode documentation](https://docs.getmoto.org/en/5.
 | `scripts/Build-Batch.ps1` | Builds the Java image with Docker; local Maven is unnecessary |
 | `scripts/Setup-Local.ps1` | Deploys dependencies, Airflow, and a compute Pool that counts deferred tasks |
 | `scripts/Deploy-Dag.ps1` | Updates DAGs through Helm |
-| `scripts/Open-Airflow.ps1` | Local UI port forwarding |
+| `scripts/Open-Airflow.ps1` | Emergency UI port forwarding |
+| `scripts/Setup-Ingress.ps1` | Installs persistent Ingress and enables native login |
+| `scripts/Initialize-AirflowAccess.ps1` | Initializes/reuses local credentials and writes the Secret |
+| `ingress/values-traefik.yaml`, `charts/airflow-ingress/` | Controller and Ingress route configuration |
 | `scripts/Start-AirflowUI.ps1` | Starts a background UI forward and verifies HTTP 200 |
 | `scripts/Verify-Batch.ps1` | Executes the real DAG and checks PostgreSQL |
 | `scripts/Verify-S3.ps1` | Verifies missing-file deferral, resume after upload, and the full S3/Python pipeline |

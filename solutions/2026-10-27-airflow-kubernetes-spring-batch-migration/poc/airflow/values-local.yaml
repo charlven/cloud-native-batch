@@ -24,13 +24,16 @@ migrateDatabaseJob:
 config:
   core:
     auth_manager: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
-    simple_auth_manager_all_admins: "True"
+    simple_auth_manager_all_admins: "False"
+    simple_auth_manager_users: "poc:admin"
+    simple_auth_manager_passwords_file: /tmp/eod-ui-passwords.json
     parallelism: "4"
     max_active_tasks_per_dag: "2"
     load_examples: "False"
     dag_ignore_file_syntax: glob
   api:
     workers: "1"
+    base_url: http://localhost
   dag_processor:
     parsing_processes: "1"
   triggerer:
@@ -79,6 +82,14 @@ triggerer:
     enabled: false
 apiServer:
   replicas: 1
+  args:
+    - bash
+    - -c
+    - 'umask 077; printf "%s" "$EOD_UI_PASSWORDS" > /tmp/eod-ui-passwords.json; exec airflow api-server'
+  env:
+    - name: EOD_UI_PASSWORDS
+      valueFrom:
+        secretKeyRef: {name: eod-ui-login, key: passwords}
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 768Mi}

@@ -1,0 +1,32 @@
+# Official Traefik chart 42.2.0; Docker Desktop exposes LoadBalancer on localhost.
+ingressClass:
+  enabled: true
+  isDefaultClass: false
+  name: traefik-poc
+providers:
+  kubernetesIngress:
+    enabled: true
+    ingressClass: traefik-poc
+    namespaces: [airflow-poc, ingress-poc]
+    publishedService:
+      enabled: true
+  kubernetesCRD:
+    enabled: false
+    namespaces: [airflow-poc]
+  kubernetesGateway:
+    enabled: false
+ports:
+  web:
+    exposedPort: 80
+  websecure:
+    expose:
+      default: false
+service:
+  spec:
+    type: LoadBalancer
+ingressRoute:
+  dashboard:
+    enabled: false
+resources:
+  requests: {cpu: 50m, memory: 64Mi}
+  limits: {cpu: "1", memory: 256Mi}

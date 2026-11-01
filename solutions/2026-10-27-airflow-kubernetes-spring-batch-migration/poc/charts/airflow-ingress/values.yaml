@@ -1,0 +1,3 @@
+host: localhost
+ingressClassName: traefik-poc
+backendService: airflow-poc-api-server
