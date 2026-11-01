@@ -49,6 +49,14 @@ $poc = './solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc'
 
 如果本机服务仍在运行，无需再次安装；端口转发停止时，仅执行 Open-Airflow.ps1，并保持窗口运行。
 
+也可以使用后台方式恢复页面入口，启动命令结束后无需保持终端窗口：
+
+```powershell
+& "$poc/scripts/Start-AirflowUI.ps1"
+```
+
+本次页面无法访问的原因是本机 8080 端口转发已退出，集群和 Airflow 四个组件均正常。后台脚本仅绑定 127.0.0.1，并检查 HTTP 200；本次已验证恢复成功。转发不是永久入口：电脑重启、网络中断或 Pod 更换后仍可能需要重新执行脚本。日志和 PID 保存在被 Git 忽略的 `.local/airflow-ui.*`；若 8080 已被占用，脚本不会终止已有进程。
+
 重新部署 DAG：
 
 ```powershell
@@ -141,6 +149,7 @@ Moto 部署方式参考[官方 Server Mode 文档](https://docs.getmoto.org/en/5
 | `scripts/Setup-Local.ps1` | 部署依赖、Airflow 和包含 deferred task 的 compute Pool |
 | `scripts/Deploy-Dag.ps1` | Helm 更新 DAG |
 | `scripts/Open-Airflow.ps1` | 本地 UI 端口转发 |
+| `scripts/Start-AirflowUI.ps1` | 后台启动 UI 转发并验证 HTTP 200 |
 | `scripts/Verify-Batch.ps1` | 运行真实 DAG 并检查数据库 |
 | `scripts/Verify-S3.ps1` | 验证缺文件等待、上传后恢复及 S3/Python 完整链路 |
 | `HISTORY-2026-10-28.md` | 上一次未完成时的历史快照，不代表当前状态 |
@@ -216,6 +225,14 @@ $poc = './solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc'
 ```
 
 No reinstallation is necessary while the local services remain running. If port forwarding stops, run only Open-Airflow.ps1 and keep that window running.
+
+Alternatively, restore the UI with a detached forward so the invoking terminal need not remain open:
+
+```powershell
+& "$poc/scripts/Start-AirflowUI.ps1"
+```
+
+The observed access failure was caused by the local port-8080 forward exiting; the cluster and all four Airflow components were healthy. The background helper binds only to 127.0.0.1 and checks for HTTP 200; restoration was verified. This is not a permanent ingress: restart the helper if the workstation reboots, networking disconnects, or Pod replacement breaks the forward. Logs and the PID are stored in ignored `.local/airflow-ui.*` files. If 8080 is already occupied, the helper does not terminate the existing process.
 
 Redeploy the DAG:
 
@@ -309,6 +326,7 @@ See the [official Moto Server Mode documentation](https://docs.getmoto.org/en/5.
 | `scripts/Setup-Local.ps1` | Deploys dependencies, Airflow, and a compute Pool that counts deferred tasks |
 | `scripts/Deploy-Dag.ps1` | Updates DAGs through Helm |
 | `scripts/Open-Airflow.ps1` | Local UI port forwarding |
+| `scripts/Start-AirflowUI.ps1` | Starts a background UI forward and verifies HTTP 200 |
 | `scripts/Verify-Batch.ps1` | Executes the real DAG and checks PostgreSQL |
 | `scripts/Verify-S3.ps1` | Verifies missing-file deferral, resume after upload, and the full S3/Python pipeline |
 | `HISTORY-2026-10-28.md` | Historical incomplete checkpoint, not the current state |
