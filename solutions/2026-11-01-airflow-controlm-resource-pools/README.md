@@ -83,6 +83,35 @@ DAG（max_active_runs=1）
 
 补充参考：[Airflow Tasks](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/tasks.html)、[Spring Batch JobInstance 与重启语义](https://docs.spring.io/spring-batch/reference/domain.html)、[Spring Batch 启动与退出码](https://docs.spring.io/spring-batch/reference/job/running.html)。Spring 文档 stable 当前指向 6.x；现有应用的具体配置应匹配其实际版本。
 
+## 短 Batch、异步等待、监控与清理：推荐修订
+
+进一步确认：绝大多数调用同步，少数异步后通过数据库查询结果；业务无状态；部分任务不能重复；多数执行几秒或长短混合。因此不再默认将十个短 Batch 全部分配独立 Pod。建议按业务恢复边界合并连续短 Batch 为一个阶段 task / Pod，长任务、资源需求差异大的任务、必须单独重试的任务独立拆出。阶段数应通过测量决定；同一个 Pod 内执行多个 java -jar 仍有多次 JVM / Spring 启动，只有 Pod 调度开销被摊薄。TaskGroup 只组织 UI，不会合并 Pod 或复用 JVM。若 JVM 初始化仍占主要时间且吞吐要求高，再评估常驻 Batch runner 服务；它需要任务隔离、并发控制、幂等与生命周期管理，不是直接改成 kubectl exec 到常驻 Pod。
+
+端到端耗时包含排队、Airflow 调度、Pod 创建和调度、镜像获取、JVM / Spring / agent 初始化、业务处理及结果确认。示例假设每步业务 3 秒，额外启动与调度 8 秒，十个串行独立 Pod 约需 110 秒，而业务总计只有 30 秒；这是算术示例，不是本集群实测。预置固定版本应用与 agent、不可变镜像、缓存 / 预拉取、足够节点容量和合理 CPU request 都值得测量。缓存仅对镜像已在目标节点且拉取策略适当时有效，删除 Pod 通常不立即删除节点镜像缓存。不要仅凭经验给出固定启动秒数。
+
+合并阶段会扩大重试范围，必须持久化每个子 Batch 的状态和输出标识，只跳过已确认成功且业务上允许跳过的步骤。不能重复任务可设置 retries=0，作为停止自动重试的运维策略，但一个 allow_retry=false flag 不能防止手工重跑、网络超时后的重复提交或其他重复执行。为此需业务幂等键、原子唯一约束 / 状态转换、对外系统幂等支持及结果不明时的人工核对；本地 flag 或账本也不能独自保证跨外部系统 exactly-once。
+
+异步调用应持久化外部 execution ID：提交一次后只查询该次执行，等待超时不应盲目再提交。可先在合并阶段中轮询数据库，或拆为提交 task + reschedule / deferrable 等待 task；后者可让提交 Pod 退出。分别设置运行名额与触发流量控制：提交 task 释放 Pool 后，等待 task 可能尚未获得 Pool，不能把二者简单当作外部运行期间的连续资源预留；如需严格外部并发控制，使用完整周期内持有的 deferrable task（Pool 计入 deferred），或外部执行系统的持久化配额。
+
+推荐观测链路：
+
+```text
+阶段 task → Batch Pod（应用 + 已内置的 Java agent）
+                 ├─ stdout/stderr → 常驻节点 Alloy → Loki → Grafana
+                 ├─ 长运行 JVM / 应用指标 → Prometheus → Grafana
+                 └─ 业务最终结果 → 持久化运行表；适用的汇总指标 → Pushgateway → Prometheus
+```
+
+Promtail 于 2026-03-02 EOL；新接入使用受维护的 Alloy 等采集器。日志通常用节点 DaemonSet 常驻采集，不必给每个 Batch Pod 启动日志 sidecar。受管环境若不能读取节点日志，需要另选受支持的采集方式。Java agent 不是日志采集器的替代品；具体是 JMX exporter、OpenTelemetry 还是其他 APM agent 尚未确认，导出协议和成本需按实际产品验证。
+
+短任务可能在服务发现与 Prometheus scrape 前结束；即使保留已完成 Pod，退出的 JVM metrics endpoint 也不会继续服务。服务级 Batch 的末次结果、耗时、记录数和最后成功时间可按 Prometheus 指南推送到 Pushgateway，但它不保存每次执行事件，不自动清理旧序列；需要稳定 grouping key 和清理策略。不要用每次 run_id 作为无界 metrics label。逐次运行审计保存在数据库 / 日志；run_id、task_id、业务日期、execution ID 可作为结构化日志字段。长任务的运行中指标继续 scrape。若采用 OTel push，仍需验证退出前 flush、collector 接收和后端落地；强制终止时不能承诺最后一批 telemetry 一定送达。
+
+业务结果持久化、日志尾部转发和指标导出经过验证后，成功 Pod 可以清理。开发期可短暂保留失败 Pod 收集退出码、OOMKilled、事件与描述信息，之后统一清理，监控存储按独立保留期保存。不要仅以“Pod 已结束”作为“日志已全部入库”的证明。直接由 KubernetesPodOperator 创建的裸 Pod 不适用 Job 的 ttlSecondsAfterFinished；延迟清理应由相应清理机制实现，或在采用 Kubernetes Job 时使用 Job TTL。Loki 中业务日志也不等同于 Airflow task 的完整调度日志，Airflow task log 需独立持久化或接入日志平台。
+
+验证计划：选择短、长、不可重复和异步 Batch，测量冷 / 热镜像下 Pod 启动、JVM / agent 初始化及业务耗时；比较逐步 Pod、分阶段 Pod；测试失败恢复、重复提交和结果不明；删除 Pod 后检查尾部日志、最终指标与每次执行审计。此处仅更新设计，未部署监控组件、改动业务代码或测得性能。
+
+新增官方资料：[Promtail EOL](https://grafana.com/docs/loki/latest/send-data/promtail/)、[Kubernetes 日志架构](https://kubernetes.io/docs/concepts/cluster-administration/logging/)、[Prometheus Batch 指标](https://prometheus.io/docs/practices/instrumentation/)、[Pushgateway 适用范围](https://prometheus.io/docs/practices/pushing/)、[Kubernetes 镜像](https://kubernetes.io/docs/concepts/containers/images/)。
+
 ## 官方资料
 
 - [BMC Resource Pools](https://documents.bmc.com/supportu/9.0.21.000/en-US/Documentation/Resource_Pools.htm)
@@ -174,6 +203,35 @@ Before splitting, inspect shared JVM state, memory, transaction context, local f
 This recommendation relies on the user's description. The XML and ten Batch implementations were not inspected, and no running DAG, image or cluster was modified. The existing POC launches one real Spring Batch containing three internal steps through one task; it does not yet implement ten independent batches.
 
 Additional references: [Airflow Tasks](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/tasks.html), [Spring Batch JobInstance and restart semantics](https://docs.spring.io/spring-batch/reference/domain.html), [Spring Batch launching and exit codes](https://docs.spring.io/spring-batch/reference/job/running.html). Spring stable documentation currently points to 6.x; application configuration must match its actual version.
+
+## Short batches, asynchronous waiting, observability and cleanup: revised recommendation
+
+Further clarification: most calls are synchronous; a few are asynchronous with database status queries. Applications are stateless, some must not execute twice, and most run for seconds or have mixed durations. Consequently, ten independent Pods are no longer the default recommendation. Group consecutive short batches into stage tasks / Pods at business recovery boundaries. Separate long batches, substantially different resource requirements and batches requiring independent retries. Determine stage count through measurements. Running several java -jar commands in one Pod still starts multiple JVMs / Spring contexts; it only amortizes Pod scheduling overhead. TaskGroup organizes the UI but does not merge Pods or reuse JVMs. If JVM initialization still dominates and throughput requires it, evaluate a persistent Batch runner service with isolation, concurrency, idempotency and lifecycle management, rather than simply executing commands in an existing Pod through kubectl exec.
+
+End-to-end duration includes queuing, Airflow scheduling, Pod creation and placement, image retrieval, JVM / Spring / agent initialization, business execution and result confirmation. Assuming 3 seconds of business execution and 8 seconds of startup / scheduling overhead per step, ten sequential independent Pods take about 110 seconds for 30 seconds of business work. This is arithmetic illustration, not a cluster benchmark. Measure fixed-version application and agent packaging, immutable images, image caching / pre-pulling, available node capacity and appropriate CPU requests. Caching only helps when the target node holds the image and the pull policy permits reuse; deleting a Pod normally does not immediately remove node image caches. Do not promise a fixed startup duration without measurement.
+
+Grouping expands the retry boundary. Persist each child Batch's status and output identity, and skip only steps confirmed successful and safe to skip under business rules. Setting retries=0 can stop automatic retries for non-repeatable work, but an allow_retry=false flag cannot prevent manual reruns, duplicate submissions after network timeouts or other duplicates. Use business idempotency keys, atomic uniqueness / state transitions, external-system idempotency and manual reconciliation for ambiguous outcomes. A local flag or ledger alone cannot guarantee exactly-once effects across external systems.
+
+For asynchronous calls, persist the external execution ID: submit once and query that execution; do not blindly resubmit after a waiting timeout. Initially poll within a grouped stage, or separate submission and a reschedule / deferrable waiting task so the submission Pod can exit. Separate running-capacity control from submission-rate control. After submission releases a Pool slot, its waiting task may not yet acquire one, so two such tasks do not provide continuous capacity reservation for the external execution. Strict external concurrency needs a deferrable task holding logical capacity throughout its lifecycle with deferred tasks included, or durable quotas enforced by the external execution system.
+
+Recommended observability flow:
+
+```text
+Stage task → Batch Pod (application + packaged Java agent)
+                 ├─ stdout/stderr → persistent node Alloy → Loki → Grafana
+                 ├─ long-running JVM / application metrics → Prometheus → Grafana
+                 └─ business final results → durable run table; suitable summary metrics → Pushgateway → Prometheus
+```
+
+Promtail reached EOL on 2026-03-02. Use a maintained collector such as Alloy for new integration. A persistent node DaemonSet normally collects logs without adding a logging sidecar to every Batch Pod. Managed environments that prohibit node log access require another supported collection method. A Java agent is not a replacement for a log collector. Whether the intended agent is a JMX exporter, OpenTelemetry or another APM agent remains unknown; validate protocols and cost for the actual product.
+
+Short tasks may finish before service discovery and a Prometheus scrape. Keeping a completed Pod does not keep an exited JVM's metrics endpoint alive. Following Prometheus guidance, suitable service-level Batch summaries such as last outcome, duration, record count and last success time may use Pushgateway. It does not store every execution event or automatically remove stale series; define stable grouping keys and lifecycle cleanup. Avoid unbounded per-run IDs as metrics labels. Keep per-execution audit in a database / logs, using run_id, task_id, business date and execution ID as structured log fields. Continue scraping long-running jobs. OTel push still requires shutdown flush and collector / backend delivery verification; final telemetry cannot be guaranteed after forced termination.
+
+Successful Pods can be removed after durable business results, tail-log delivery and metric export have been validated. During development, briefly retain failed Pods to inspect exit codes, OOMKilled, events and descriptions, then clean them up separately; monitoring storage has its own retention. Pod completion alone does not prove all logs reached Loki. Bare Pods created directly by KubernetesPodOperator cannot use a Job's ttlSecondsAfterFinished; delayed cleanup requires an appropriate cleanup mechanism, or Job TTL if Kubernetes Jobs are adopted. Business logs in Loki are not the complete Airflow scheduling/task log; persist or ingest Airflow task logs independently.
+
+Validation plan: choose short, long, non-repeatable and asynchronous batches; measure cold / warm-image Pod startup, JVM / agent initialization and business time; compare individual and grouped Pods. Test failures, duplicate submissions and ambiguous outcomes. After deleting Pods, verify tail logs, final metrics and per-execution audit. This is a design update only: no monitoring components were deployed, business code changed or performance measured.
+
+Additional official references: [Promtail EOL](https://grafana.com/docs/loki/latest/send-data/promtail/), [Kubernetes logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/), [Prometheus Batch instrumentation](https://prometheus.io/docs/practices/instrumentation/), [Pushgateway scope](https://prometheus.io/docs/practices/pushing/), [Kubernetes images](https://kubernetes.io/docs/concepts/containers/images/).
 
 ## Official references
 
