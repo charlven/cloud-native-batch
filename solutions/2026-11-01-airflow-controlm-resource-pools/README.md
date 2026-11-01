@@ -53,9 +53,35 @@ container_resources=k8s.V1ResourceRequirements(
 ## 相关文件、验证与限制
 
 - [现有 POC DAG](../2026-10-27-airflow-kubernetes-spring-batch-migration/poc/charts/eod-poc/files/spring_batch_poc.py)：已经使用 eod_compute Pool、deferrable=True 和 container_resources；本文的 eod_batch 是教学示例，不替换现有设置。
-- 尚未查看用户实际 XML，不能确认它属于上述哪种结构，也不能据此定出生产容量。
+- 用户已说明一个 Control-M Job 的十步分别触发不同 Spring Batch；尚未查看实际 XML 和程序，无法确认拆分条件或生产容量。
 - 核对了官方文档和现有 POC 源码；未部署或运行本文示例，未修改现有集群。
 - 使用前确认调度单元、资源池含义、跨运行并发和重试边界，再用负载测试确定容量。
+
+## 补充：一个 Control-M Job 依次触发十个不同 Spring Batch
+
+用户进一步说明：当前是一个 Control-M Job，十步分别触发不同 Spring Batch。若这些 Batch 可独立启动、等待完成并报告结果，建议新架构采用一个业务 DAG、十个串行 Airflow task，每个 task 用 KubernetesPodOperator 启动一个 Batch Pod。外层流程依赖交给 Airflow，每个 Batch 内部的 chunk、事务、Step 和检查点继续由 Spring Batch 管理。单个 Batch 内部 Step 不必逐个拆成 Airflow task。
+
+```text
+DAG（max_active_runs=1）
+  batch_01 → batch_02 → ... → batch_10
+      每个 task → 一个 Pod → 一个独立 Spring Batch Job
+```
+
+十个 task 不等于十个同时运行的 Pod；严格串行的单次 DAG run 通常仅有一个业务 Batch Pod 在执行（不包括 Airflow 服务、清理中的 Pod 或异常遗留 Pod）。按该模式使用：
+
+1. 为十个 Batch 提供可单独调用的启动入口；镜像可以分别构建，也可以在相同依赖与发布周期下共享镜像并选择 Job。
+2. 在一个 DAG 中串联十个 KubernetesPodOperator，保留默认 all_success 依赖，等待当前 Batch 真正完成再开始下一步。若仅调用异步触发 API，需继续查询最终执行状态，不能把请求被接受当成功。
+3. 开始时每个 task 配置 pool="eod_compute", pool_slots=1。现有 POC 安装脚本创建该池容量为 2，并使用 --include-deferred；这里只核对了脚本，未检查当前集群状态。需要更多并发时按测量调整，不因十步就设置十个 slot。
+4. 每个 task 独立指定 CPU / 内存 requests 和 limits。前一步结束后释放 Pool 额度，下一步重新竞争；max_active_runs=1 限制这个 DAG 的批次重叠，不锁住其他 DAG。如果业务要求整条链跨 DAG 独占，需要另行设计带失败恢复的业务锁。
+5. 第六步失败时，默认依赖使后续步骤等待成功，重试预算耗尽后后续可成为 upstream_failed。自动重试或手工清理失败 task 后可重跑第六步，无需主动清理已成功的前五步；若后续已被标记 upstream_failed，手工恢复时应选择清理相应下游。该行为仍受依赖和重试配置影响。
+6. Spring Batch 业务失败必须映射为进程非零退出码；设置执行超时，持久化 JobRepository、业务输出和日志。Pod 间通过数据库、对象存储或显式共享存储交换数据，不依赖前一个 Pod 的本地目录。
+7. 统一传递 businessDate、tenant/domain（如适用）、逻辑批次标识。为同一逻辑执行的重试保持 identifying JobParameters 稳定；不要为了每次重试都能启动就加入新的 identifying 时间戳。根据实际 Spring Batch 版本和入口实现 restart / 已完成实例处理。Pod 被杀后若元数据仍为 STARTED，必须先确认旧执行已停止再按版本提供的恢复流程处理。跨系统副作用需应用级幂等，Airflow 重试不提供 exactly-once 保证。
+
+拆分前检查共享 JVM、内存、事务上下文、本地文件、父 JobRepository 重启语义和补偿逻辑。若当前十步实际上强依赖这些上下文，先用一个 task 启动旧包装流程作为过渡，再逐步解耦；十个独立程序不应仅因过去包在一个 Control-M Job 中而永久保留为一个不可观察的 task。非常短的步骤也需权衡 JVM / Pod 启动开销。
+
+本建议以用户描述为依据，未查看 XML 或十个 Batch 源码，未修改运行中的 DAG、镜像或集群。现有 POC 是一个 task 启动一个含内部三步的真实 Spring Batch，不是已实现的十个独立 Batch 流程。
+
+补充参考：[Airflow Tasks](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/tasks.html)、[Spring Batch JobInstance 与重启语义](https://docs.spring.io/spring-batch/reference/domain.html)、[Spring Batch 启动与退出码](https://docs.spring.io/spring-batch/reference/job/running.html)。Spring 文档 stable 当前指向 6.x；现有应用的具体配置应匹配其实际版本。
 
 ## 官方资料
 
@@ -119,9 +145,35 @@ When using deferrable=True while waiting for external Pods, enable Include defer
 ## Related files, verification and limitations
 
 - [Existing POC DAG](../2026-10-27-airflow-kubernetes-spring-batch-migration/poc/charts/eod-poc/files/spring_batch_poc.py): already uses the eod_compute pool, deferrable=True and container_resources. This document's eod_batch is a teaching example, not a replacement for existing settings.
-- The user's actual XML has not been inspected, so neither its structure nor production sizing is established.
+- The user clarified that ten steps in one Control-M Job trigger distinct Spring Batch jobs; the XML and programs have not been inspected, so split feasibility and production sizing remain unverified.
 - Official documentation and existing POC source were checked. These examples were not deployed or executed, and the existing cluster was not modified.
 - Before use, identify scheduling units, pool semantics, concurrency across runs, and retry boundaries; then size capacity through load testing.
+
+## Follow-up: one Control-M Job triggers ten distinct Spring Batch jobs
+
+The user clarified that one Control-M Job has ten steps, each triggering a different Spring Batch job. If these batches can be launched independently, awaited, and checked for their final result, the recommended new design is one business DAG containing ten sequential Airflow tasks, each launching one Batch Pod through KubernetesPodOperator. Airflow owns dependencies between batches; Spring Batch retains each batch's chunks, transactions, internal Steps and checkpoints. Internal Steps need not each become Airflow tasks.
+
+```text
+DAG (max_active_runs=1)
+  batch_01 → batch_02 → ... → batch_10
+      Each task → one Pod → one independent Spring Batch Job
+```
+
+Ten tasks do not mean ten concurrently running Pods. A strictly sequential single DAG run normally executes only one business Batch Pod at a time, excluding Airflow services, terminating Pods and abnormal leftovers. Apply this design as follows:
+
+1. Provide a separately callable entry point for each Batch. Images may be separate, or shared with job selection when dependencies and release cycles are compatible.
+2. Chain ten KubernetesPodOperator tasks in one DAG using the default all_success dependency. Wait for actual Batch completion before starting its successor. If the interface only submits an asynchronous API request, continue polling for the final result; acceptance is not completion.
+3. Initially use pool="eod_compute", pool_slots=1 for each task. The existing POC setup script creates this pool with capacity 2 and --include-deferred. Only the script was inspected, not the current cluster state. Change capacity based on measurements, not the number of sequential steps.
+4. Set CPU / memory requests and limits per task. One step releases pool capacity and the next competes for it again. max_active_runs=1 prevents overlapping runs of this DAG, not other DAGs. Workflow-wide exclusivity across DAGs requires a separate business lock with failure recovery.
+5. If step six fails, default dependencies wait for success; after retries are exhausted downstream tasks can become upstream_failed. Automatic retries or manually clearing the failed task can rerun batch six without deliberately clearing the first five successful tasks. If downstream tasks already became upstream_failed, select the relevant downstream tasks for clearing during manual recovery. Behavior remains subject to dependency and retry configuration.
+6. Map Spring Batch business failure to a nonzero process exit code. Set execution timeouts and persist JobRepository, business outputs and logs. Exchange data through databases, object storage or explicitly shared storage rather than the previous Pod's local directory.
+7. Pass businessDate, tenant/domain where relevant, and a logical batch identifier consistently. Keep identifying JobParameters stable across retries of the same logical execution; do not add a fresh identifying timestamp merely to bypass restart checks. Implement restart and already-completed-instance handling for the actual Spring Batch version and entry point. If a killed Pod leaves STARTED metadata, confirm the old execution has stopped before using version-appropriate recovery procedures. Application-level idempotency is needed for external side effects; Airflow retries do not guarantee exactly-once execution.
+
+Before splitting, inspect shared JVM state, memory, transaction context, local files, parent JobRepository restart semantics and compensation logic. If the existing steps depend tightly on these, first run the legacy wrapper through one task as a transition and decouple incrementally. Independent programs should not permanently remain one opaque task solely because they previously belonged to one Control-M Job. For very short steps, also weigh JVM / Pod startup overhead.
+
+This recommendation relies on the user's description. The XML and ten Batch implementations were not inspected, and no running DAG, image or cluster was modified. The existing POC launches one real Spring Batch containing three internal steps through one task; it does not yet implement ten independent batches.
+
+Additional references: [Airflow Tasks](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/tasks.html), [Spring Batch JobInstance and restart semantics](https://docs.spring.io/spring-batch/reference/domain.html), [Spring Batch launching and exit codes](https://docs.spring.io/spring-batch/reference/job/running.html). Spring stable documentation currently points to 6.x; application configuration must match its actual version.
 
 ## Official references
 
