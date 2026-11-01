@@ -1,3 +1,7 @@
+[中文](#zh) | [English](#en)
+
+<a id="zh"></a>
+
 # Spring Batch / Control-M 向 Airflow / Kubernetes 迁移方案
 
 日期：2026-10-27（Asia/Shanghai）
@@ -251,4 +255,250 @@ DAG 固定不可变 image digest，避免可覆盖 tag 引起版本漂移。IfNo
 - [本地 POC 部署文件与实测结果](poc/README.md)：2026-11-01 已完成 Airflow 安装，真实 Spring Batch Java 项目经 KubernetesPodOperator 运行成功，主动失败传播验证通过。包含源码、Chart、DAG、安装与验收脚本。
 - 当前尚未接入生产文件、实现生产数据库迁移或完成 EOD 容量验证；原始架构评估的这些限制仍然适用。
 
-本方案基于讨论场景和官方机制文档整理，未访问真实 Control-M 配置、Kubernetes 集群、Nexus、业务数据库或生产文件，也未执行性能与故障测试。官方 stable 文档会更新，实施时应锁定软件版本并复核具体参数。容量、支持合同、镜像保留、网络访问和数据治理策略均待环境验证。
+原始架构评估基于讨论场景和官方机制文档整理，未访问生产 Control-M 配置、Kubernetes 集群、Nexus、业务数据库或文件，也未执行生产性能与故障测试。官方 stable 文档会更新，实施时应锁定软件版本并复核具体参数。容量、支持合同、镜像保留、网络访问和数据治理策略均待环境验证。
+
+---
+
+<a id="en"></a>
+
+# Spring Batch / Control-M migration to Airflow / Kubernetes — English
+
+Date: 2026-10-27 (Asia/Shanghai).
+
+Original status: architecture feasibility assessment and POC design, without execution or production capacity validation at the time of writing. The [local POC results](poc/README.md#en) now document successful execution on 2026-11-01. Production validation remains outstanding.
+
+Scope: EOD batch processing with many upstream/downstream dependencies, thousands of daily job executions, and restricted Kubernetes namespace quotas.
+
+## 1. Problem and preliminary conclusion
+
+The existing system uses Control-M to launch Java entry points for older Spring Batch applications deployed on VMs. XML and properties files define Jobs, Steps, Beans, and parameters. A typical chain waits for files, moves them, transforms and loads them into the database, loads a Tree, calculates Exposure, and triggers downstream work.
+
+The target upgrades Spring Batch, organizes code and images by business domain, uses Airflow for orchestration, and runs work on demand in Kubernetes.
+
+The architecture is conditionally feasible. Production acceptance requires evidence that the EOD deadline and quotas can be met, failures can be recovered accurately, and support staff can identify waiting and failure causes. Thousands of daily jobs alone do not establish capacity.
+
+Recommendations:
+
+- Airflow owns schedules and cross-domain dependencies; Spring Batch owns business steps, transactions, and checkpoints; Kubernetes supplies execution resources.
+- Batch applications run once and exit; they do not all need permanent HTTP services.
+- Use asynchronous Sensors for file waiting rather than repeatedly creating Java Pods.
+- Connect domains using fixed data snapshots. Trace input, configuration, and image versions.
+- Use node image caches for speed, and retained production images plus an independently available image supply for resilience.
+- Start with one complete business chain before expanding scope.
+
+## 2. End-to-end flow
+
+```mermaid
+flowchart TD
+    A[Upstream files arrive on VM] --> B[File ingestion agent]
+    B --> C[S3 raw files and completion manifest]
+    D[Airflow EOD time and business date] --> E[Async wait for manifest]
+    C --> E
+    E --> F[Ingestion Pod validates transforms loads]
+    F --> G[Publish completed data version]
+    G --> H[Tree Pod creates snapshot]
+    H --> I[Exposure Pod reads fixed snapshot]
+    I --> J[Validate and publish results]
+    J --> K[Downstream processing]
+    F -.execution records.-> L[(Spring Batch Repository)]
+    H -.execution records.-> L
+    I -.execution records.-> L
+```
+
+Keep waiting separate from computation. A deferrable S3 Sensor releases worker execution slots while the triggerer checks asynchronously. Plan triggerer capacity, polling intervals, and storage request volume. [Official S3 Sensor documentation](https://airflow.apache.org/docs/apache-airflow-providers-amazon/stable/operators/s3/s3.html)
+
+Load and Transfer can become multiple Steps in one Job when they share a recovery boundary, have no independent consumers, and do not need independent scaling. Persist expensive intermediate work for reuse. A replacement Pod cannot depend on the previous Pod's temporary disk surviving.
+
+## 3. VM file ingestion
+
+During transition, retain a lightweight file agent on the VM. Existing supported transfer tools, a persistent process, or scheduled synchronization may suffice.
+
+Prefer VM-initiated upload and Airflow waiting:
+
+1. Confirm completion using an upstream marker or atomic rename protocol.
+2. Upload to an S3 path containing business date, source, and file version.
+3. Verify size and checksum.
+4. Publish the manifest last, listing every expected object version and checksum.
+5. Persist transfer status for retries, restart reconciliation, and rescanning.
+
+A file's existence does not establish batch completeness; briefly unchanged size is not a reliable production completion protocol.
+
+If uploads must be initiated on demand, Airflow can request the VM service and query durable status asynchronously. Handle service outages, duplicate requests, and a successful request whose response is lost.
+
+## 4. Scheduling, concurrency, and operational support
+
+Control-M Resource Pools, formerly Quantitative Resources, constrain concurrency or database connection consumption; Lock Resources express shared/exclusive access. There is no universal concurrency number for every deployment: inspect the actual version, configuration, infrastructure, and contract. [BMC Resource Pools](https://documents.bmc.com/supportu/9.0.21.000/en-US/Documentation/Resource_Pools.htm), [BMC job resources](https://docs.bmc.com/xwiki/bin/view/Control-M-Orchestration/Control-M/workloadautomation/Control-M-Automation-API/ctmapi9211/Code-Reference/Job-Properties/)
+
+| Need | Target mechanism |
+|---|---|
+| Schedules and predecessor dependencies | Airflow DAG, schedule, task dependencies |
+| Concurrency for a workload class | Pool and pool_slots |
+| Overlap between business dates | max_active_runs and explicit date rules |
+| Running tasks within a DAG | max_active_tasks; verify the selected version's semantics |
+| CPU, memory, Pod caps | Kubernetes requests/limits and ResourceQuota |
+| One active processor per business object | Database uniqueness, business locks, or leases |
+| Holidays, late files, backfills, manual release | Explicitly migrated and tested rules |
+
+Executor capacity, global settings, scheduler throughput, and metadata database throughput also matter. Raising one parameter does not establish capacity.
+
+A task generally belongs to one Airflow Pool; this is not equivalent to holding multiple Control-M pools and locks simultaneously. Complex constraints need combined resource budgets or business locks. [Airflow Pools](https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/pools.html)
+
+A deferred KubernetesPodOperator can still have a running business Pod. Compute Pools must count deferred tasks to prevent oversubscription. File-waiting tasks can use a separate policy. [Deferral mechanics](https://github.com/apache/airflow/blob/main/airflow-core/docs/authoring-and-scheduling/deferring.rst)
+
+| Owner | Responsibilities |
+|---|---|
+| Batch application team | Business correctness, idempotency, restart, reconciliation |
+| Airflow platform team | Scheduler, triggerer, executor, metadata DB, upgrades |
+| Kubernetes platform team | Nodes, quotas, networking, scheduling, image pulls |
+| Data/storage team | PostgreSQL, S3, backup and recovery |
+| First-line support | Identify waiting reasons, follow rerun runbooks, escalate |
+
+Self-hosted open-source Airflow requires explicit commercial support, on-call coverage, backup/recovery, and maintenance arrangements. Existing Control-M vendor support does not automatically transfer. Include time zones, business calendars, dates crossing midnight, conditions, alerts, access control, audit, manual intervention, and historical retention in the migration inventory.
+
+## 5. Spring Batch execution and upgrade
+
+Run a selected Job once and exit. Example parameters:
+
+```text
+jobName=calculateExposure
+businessDate=2026-10-26
+inputVersion=tree-snapshot-123
+configVersion=exposure-config-17
+```
+
+Read a fixed configuration version, validate inputs, execute Job/Steps, persist results and status, then return an explicit exit code. Business failures must produce a nonzero container exit code.
+
+KubernetesPodOperator creates and monitors Pods without requiring KubernetesExecutor. [Official operator documentation](https://airflow.apache.org/docs/apache-airflow-providers-cncf-kubernetes/10.21.0/operators.html)
+
+If KubernetesJobOperator is selected later, assign retry ownership between Airflow and Kubernetes Jobs to avoid multiplying attempts. Choose one execution model for the initial POC.
+
+Move XML incrementally to Java configuration while externalizing environment settings. Rewriting every XML definition is unnecessary for the first migration.
+
+Check JDK, Spring Boot/Framework, Batch APIs, metadata schema, ExecutionContext serialization, and compatibility with old execution records. Upgrading dependencies alone is insufficient. Spring Batch 6 changes APIs, infrastructure, and database structures; choose the target from the organization's support matrix. [Spring Batch 6 migration guide](https://github.com/spring-projects/spring-batch/wiki/Spring-Batch-6.0-Migration-Guide)
+
+Explicitly configure a JDBC JobRepository when durable restart is required, and verify behavior for the selected version rather than assuming defaults.
+
+## 6. Configuration, state, and data
+
+| Information | Suggested location |
+|---|---|
+| Job/Step definitions and business code | Git and container image |
+| Environment endpoints, log levels, technical settings | Versioned ConfigMap |
+| Credentials | Enterprise secret manager or Kubernetes Secret |
+| Business date, input version, configuration version | Airflow runtime parameters |
+| Approved/auditable dynamic business rules | Versioned database configuration |
+| Job/Step executions and checkpoints | PostgreSQL JDBC JobRepository |
+| DAG/Task scheduling state | Airflow metadata database |
+| File receipt, dataset publication, business completion | Business control tables |
+| Raw files, intermediates, result snapshots | S3 or business storage |
+
+ConfigMap and databases serve different purposes. Pin configuration for each run to prevent mid-run changes from producing inconsistent steps.
+
+The Batch Repository holds framework execution records, not every business completion state. [JobRepository documentation](https://docs.spring.io/spring-batch/reference/job/configuring-repository.html)
+
+Infrastructure may be shared locally, but separate databases/schemas and permissions and assess connections and failure impact. Domains need not share one Batch metadata schema. Do not use Airflow metadata as the business state database. Record image digest, configuration version, input version, and business date for every execution.
+
+## 7. Domains, repositories, images, and DAGs
+
+Repositories define code/team ownership; images are release artifacts and may contain several jobs for one domain; Pods are executions; DAGs define business workflows. They do not need one-to-one correspondence.
+
+Start with one EOD DAG:
+
+```text
+ingestion image → publishes inputVersion
+tree image      → consumes inputVersion, publishes treeSnapshotId
+exposure image  → consumes treeSnapshotId, publishes exposureRunId
+downstream      → consumes the published exposureRunId
+```
+
+Consumers must use explicitly published, fixed versions. Reading the “latest Tree” can mix dates during historical reruns. Exchange large data through storage; Airflow carries references, versions, and small statistics. Split DAGs only when independent scheduling or reuse justifies it, with explicit success conditions, business-date mapping, and timeouts.
+
+## 8. Retry, recovery, and idempotency
+
+Distinguish retry (recover the same input), replay (reproduce fixed historical input), and correction (publish a new version after changing inputs/rules).
+
+Business identity may include jobName, businessDate, and inputVersion; choose fields according to business granularity. An Airflow attempt number should not automatically define a new business input.
+
+Test a Pod dying after committing data but before reporting success. Retrying must not duplicate writes or calculations. Combine uniqueness constraints, idempotent writes, staging, and publication markers; these platforms do not automatically provide end-to-end exactly-once behavior.
+
+Forced termination may leave unfinished Batch records. Confirm the old execution has stopped before controlled recovery. Define timeouts, cancellation, lease expiry, orphan Pod checks, and manual runbooks.
+
+## 9. Startup latency and capacity
+
+```text
+Total = Airflow queueing + Pod creation/scheduling + image checks/pulls
+      + container/JVM startup + input reads + business processing + status reporting
+```
+
+VM execution also starts a JVM, so not all new startup time is Kubernetes overhead. Measure cached/uncached images, new nodes, EOD bursts, and serial short tasks; record P50/P95/P99 and critical paths. Combine short tightly coupled steps based on measurements.
+
+Illustration only: 1,000 tasks averaging five occupied minutes within 120 minutes require roughly 42 average execution slots (1000 × 5 / 120), before dependencies, peaks, startup, retries, fragmentation, or waiting. This is not a capacity guarantee. More concurrency cannot fix a serial critical path longer than the window.
+
+Budget resource distributions, CPU/memory requests and limits, temporary disk, networking, storage throughput, database connections, Kubernetes API load, and Airflow metadata throughput.
+
+ResourceQuota is an upper bound, not a reservation. Exceeding it can reject Pod creation; insufficient node resources can leave a Pod Pending even within quota. [ResourceQuota](https://kubernetes.io/docs/concepts/policy/resource-quotas/)
+
+Throttle in Airflow, retain quota as final protection, reserve retry/critical-work headroom, and define small/large resource classes. Fifty Pods allowing ten database connections each can demand 500 connections.
+
+## 10. Nexus, versions, and caches
+
+Distinguish Helm definitions, registries/proxy caches, and node runtime caches. Helm does not itself cache images.
+
+Pin immutable digests. IfNotPresent can reuse an image on the selected node, but node replacement, garbage collection, scheduling elsewhere, and image authorization policies can require registry access. Node caches do not guarantee historical retention. [Kubernetes images](https://kubernetes.io/docs/concepts/containers/images/), [garbage collection](https://kubernetes.io/docs/concepts/architecture/garbage-collection/)
+
+| Layer | Approach | Purpose |
+|---|---|---|
+| Release retention | Retain digests referenced by DAGs, rollback plans, or historical replay | Keep historical images available |
+| Fault isolation | Replicate complete images to an independently available production registry during release | Continue serving images during build-side Nexus outages |
+| Performance | Pre-pull EOD images on target nodes | Reduce latency and pull bursts |
+
+A proxy that still needs Nexus is not independent supply. Implement registry switching, authentication, and admission behavior explicitly; Kubernetes does not automatically try an arbitrary backup location. Avoid runtime JAR/dependency downloads from Nexus.
+
+Cache capacity and retention depend on disk, shared layers, garbage-collection thresholds, version counts, and policies. Test a historical version on a new uncached node while Nexus is unavailable.
+
+## 11. Logs and monitoring
+
+Emit structured stdout/stderr and collect centrally into Loki for Grafana, using existing platform collectors such as Alloy rather than one logging service per batch Pod. [Grafana Kubernetes collection](https://grafana.com/docs/grafana-cloud/send-data/alloy/collect/logs-in-kubernetes/)
+
+Correlate businessDate, domain, jobName, dagRunId, jobExecutionId, inputVersion, and imageDigest. Keep high-cardinality execution identities in logs/tables rather than every Prometheus label.
+
+Short jobs may finish between scrapes. Use durable execution records for final outcomes; if Pushgateway is appropriate for service-level batch results, plan stale-series cleanup and availability. [Prometheus guidance](https://prometheus.io/docs/practices/pushing/)
+
+Monitor EOD completion, remaining critical path, late files, queue/start/process duration, input/output/rejected counts, retries, Pending/OOM/pull failures, connections, storage throughput, and namespace resources. Verify logs remain accessible after Pod deletion.
+
+## 12. POC acceptance
+
+Representative target: VM ingestion → S3 manifest → Airflow wait → Batch database load → Tree → Exposure → reconciliation.
+
+| Scenario | Acceptance focus |
+|---|---|
+| Normal execution | Reconcile record counts and Exposure with the old system |
+| Duplicate, late, incomplete files | No duplicate processing or premature calculation; clear timeout |
+| Pod termination | Recover without duplicates or partially published output |
+| Airflow restart | Track existing Pods without unintended execution |
+| Commit succeeds, reporting fails | Retry preserves unique business results |
+| Quota exhausted | Bounded queueing/backoff; no retry storm |
+| Nexus outage and uncached node | Independent image supply works |
+| Multiple image versions | Each DAG uses its specified version |
+| Historical date replay | Correct input/configuration/result versions |
+| EOD peak replay | Overall window and critical path meet deadlines |
+
+Agree P95 startup, EOD deadline, concurrency, recovery time, database load, and reconciliation criteria before testing. The original assessment had no measured values; do not invent acceptance results.
+
+## 13. Implementation sequence
+
+1. Collect Batch/JDK versions, a real Control-M chain, durations and peak concurrency, quotas, and EOD deadlines.
+2. Inventory calendars, locks, dependencies, rerun semantics, and manual support procedures.
+3. Pin POC versions and data contracts; select normal, failure, and peak inputs.
+4. Validate framework upgrade, container execution, and Airflow orchestration incrementally, then expand domains.
+5. Compare both systems on identical input, then inject failures and replay capacity.
+6. Define ownership, runbooks, recovery, and rollback. Only one production scheduling path should own writes at cutover.
+
+## 14. Files and verification boundaries
+
+- This document: architecture, decisions, acceptance criteria, and official references.
+- [Repository home](../../README.md#en): index and retrieval instructions.
+- [Local POC and observed results](poc/README.md#en): as of 2026-11-01, Airflow runs a real Spring Batch Java application through KubernetesPodOperator; normal and intentional failure cases passed. Source, charts, DAGs, setup, and verification scripts are included.
+- Production files, database migration, and EOD capacity validation remain outside the completed local POC.
+
+The original architecture assessment was based on the described scenario and official mechanisms, without inspecting production Control-M, Kubernetes, Nexus, business databases, or files and without production performance/fault testing. Stable documentation changes: pin versions and recheck settings during implementation. Capacity, support contracts, retention, networking, and governance still require environment-specific validation.

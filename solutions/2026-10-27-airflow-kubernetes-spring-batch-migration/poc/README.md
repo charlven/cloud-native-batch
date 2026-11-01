@@ -1,3 +1,7 @@
+[中文](#zh) | [English](#en)
+
+<a id="zh"></a>
+
 # 本地 Airflow + Kubernetes + Spring Batch POC
 
 更新：2026-11-01（Asia/Shanghai）。**真实 Java Batch 已由 Airflow 在 Kubernetes 中执行成功；失败传播也已验证。**
@@ -121,3 +125,131 @@ kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- ps
 - 工具、缓存、随机凭据都在根目录 `.local/`，已排除 Git；不要上传其中的 Secrets 或 kubeconfig。
 
 官方参考：[Airflow Chart](https://airflow.apache.org/docs/helm-chart/1.22.0/)、[Spring Boot Batch](https://docs.spring.io/spring-boot/3.5/how-to/batch.html)、[Spring Batch 入门](https://spring.io/guides/gs/batch-processing)。
+
+---
+
+<a id="en"></a>
+
+# Local Airflow + Kubernetes + Spring Batch POC — English
+
+Updated: 2026-11-01 (Asia/Shanghai). **Airflow has successfully executed a real Java Batch application on Kubernetes. Failure propagation has also been verified.**
+
+## Executed pipeline
+
+```mermaid
+flowchart LR
+    A[Airflow spring_batch_poc] --> B[KubernetesPodOperator]
+    B --> C[Java Spring Batch Pod]
+    C --> D[loadTrades]
+    D --> E[calculateExposure]
+    E --> F[reconcile]
+    D --> G[(PostgreSQL)]
+    E --> G
+    F --> G
+```
+
+- Airflow 3.2.2, official Helm chart 1.22.0; LocalExecutor, deferrable KubernetesPodOperator, and triggerer.
+- Docker Desktop Kubernetes v1.34.1; scripts explicitly target context `docker-desktop`.
+- Spring Boot 3.5.7 / Spring Batch 5.2.4, Java 21 container, local image `eod-spring-batch:0.1.0`.
+- PostgreSQL 16.6 persists Airflow metadata, the Spring Batch JobRepository, and demo business tables.
+- Namespaces: `airflow-poc` and `batch-poc`.
+
+The Java project reads a fixed CSV fixture bundled in its image and executes three real Spring Batch steps. The demo exposure formula is amount × 1.10. Production calculation rules, VM files, and S3 are not yet integrated.
+
+## Open and run
+
+Access [Airflow UI](http://localhost:8080). Local automatic administrator access requires no password. Access is exposed through a loopback-only port forward on 127.0.0.1; this authentication setup is unsuitable for public or production services.
+
+Choose **spring_batch_poc** and trigger it manually with the defaults:
+
+```json
+{"business_date":"2026-11-01","force_failure":false}
+```
+
+From the repository root in PowerShell 7:
+
+```powershell
+$poc = './solutions/2026-10-27-airflow-kubernetes-spring-batch-migration/poc'
+& "$poc/scripts/Build-Batch.ps1"
+& "$poc/scripts/Setup-Local.ps1"
+& "$poc/scripts/Open-Airflow.ps1"
+```
+
+No reinstallation is necessary while the local services remain running. If port forwarding stops, run only Open-Airflow.ps1 and keep that window running.
+
+Redeploy the DAG:
+
+```powershell
+& "$poc/scripts/Deploy-Dag.ps1"
+```
+
+Trigger a run and wait for verification:
+
+```powershell
+& "$poc/scripts/Verify-Batch.ps1"
+```
+
+A Spring Batch JobInstance is identified by businessDate, requestId, and forceFailure. requestId comes from the Airflow run_id. Continuing the same DAG run uses the same parameters; a new manual trigger creates a new JobInstance. Demo business rows are upserted using business date and trade/Tree keys, so repeated normal runs do not add duplicate rows. Production still requires input/configuration versioning, idempotency, and publication protocols.
+
+## Observed verification results
+
+| Check | Result |
+|---|---|
+| Kubernetes node, CoreDNS, hostpath storage | Healthy |
+| Airflow API server, scheduler, DAG processor, triggerer | All Ready |
+| DAG import errors | None |
+| Local Maven build and Docker multistage build | Both succeeded |
+| Normal DAG run `poc-1793527210` | success |
+| Spring Batch JobExecution 1 | COMPLETED / COMPLETED |
+| Three steps in the normal execution | All COMPLETED |
+| Business results for 2026-11-01 | TREE-A=385.00; TREE-B=55.00 |
+| Intentional failure run `poc-failure-check` | failed, as expected |
+| Failed execution | loadTrades COMPLETED; calculateExposure FAILED; reconcile was not entered |
+| UI HTTP check | 200 |
+
+The red run `poc-failure-check` retained in the UI is intentional. Set force_failure to true to reproduce it: Java throws an exception, the Job fails, and a nonzero process exit code propagates the failure to Airflow.
+
+Query the results:
+
+```powershell
+kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- psql -U airflow -d airflow -c 'SELECT * FROM spring_poc.exposures ORDER BY business_date,tree_id'
+kubectl --context docker-desktop -n batch-poc exec deployment/eod-postgres -- psql -U airflow -d airflow -c 'SELECT job_execution_id,status,exit_code FROM batch_job_execution ORDER BY job_execution_id'
+```
+
+## Files
+
+| File/directory | Purpose |
+|---|---|
+| `spring-batch/` | Complete Java source, pom, CSV fixture, and Dockerfile |
+| `charts/eod-poc/files/spring_batch_poc.py` | Real Java Batch DAG |
+| `charts/eod-poc/files/eod_pipeline.py` | Earlier optional S3/Python domain simulation, left paused by default |
+| `charts/eod-poc/files/worker.py` | Earlier S3 simulation, not Spring Batch |
+| `charts/eod-poc/` | ConfigMap DAG publication, business configuration, RBAC, quotas, PostgreSQL, optional MinIO |
+| `airflow/values-local.yaml` | Local settings for the official Airflow chart |
+| `scripts/Build-Batch.ps1` | Builds the Java image with Docker; local Maven is unnecessary |
+| `scripts/Setup-Local.ps1` | Deploys dependencies, Airflow, and a compute Pool that counts deferred tasks |
+| `scripts/Deploy-Dag.ps1` | Updates DAGs through Helm |
+| `scripts/Open-Airflow.ps1` | Local UI port forwarding |
+| `scripts/Verify-Batch.ps1` | Executes the real DAG and checks PostgreSQL |
+| `HISTORY-2026-10-28.md` | Historical incomplete checkpoint, not the current state |
+
+## Resolved issues
+
+1. Stale Docker Desktop communication files prevented startup. Backing up the temporary communication directories restored startup without deleting containers, images, or data.
+2. kubelet sent internal requests to the workstation proxy. Local NO_PROXY settings were passed to WSL using WSLENV=NO_PROXY/u:no_proxy/u; the node became Ready. External requests retain the existing proxy.
+3. ConfigMap internal symlinks triggered Airflow's directory-loop detection. `.airflowignore` now excludes `..*` with glob syntax explicitly enabled.
+4. The FAB user-creation Job is disabled because this POC uses SimpleAuthManager.
+5. This chart deploys the LocalExecutor scheduler as a StatefulSet; scripts target that resource.
+6. PowerShell consumes a bare `--` forwarded through a function. The shared helper restores kubectl exec's command separator.
+
+## Limits and next steps
+
+- The selected MinIO image currently returns access denied. Its default replica count is zero and Setup no longer seeds S3. The S3 simulation DAG remains available but has not been validated end to end; connect an accessible object store before running it.
+- The Java POC reads bundled CSV. S3 integration, file manifests, and multiple domain images are future work.
+- Loki, Grafana, and Prometheus are not deployed. Current evidence uses Airflow task logs and database records; durable remote log storage is not configured.
+- For local convenience, PostgreSQL shares an instance and user; business data uses schema spring_poc. Production needs separated permissions, availability, and recovery policies.
+- imagePullPolicy=Never depends on the local Docker Desktop image store. Other clusters require publishing the image to an accessible registry and pinning a digest.
+- EOD peak capacity, forced Pod termination/recovery, historical version replay, business calendars, and production security settings are not yet verified.
+- Tools, caches, and generated credentials live in the root `.local/` directory, which Git ignores. Do not upload its Secrets or kubeconfig.
+
+Official references: [Airflow chart](https://airflow.apache.org/docs/helm-chart/1.22.0/), [Spring Boot Batch](https://docs.spring.io/spring-boot/3.5/how-to/batch.html), [Spring Batch guide](https://spring.io/guides/gs/batch-processing).
